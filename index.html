@@ -3,13 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>הקלטת קול - DELTA ONE VOICE</title>
+<title>DELTA ONE VOICE - הקלטה</title>
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body {
-    height: 100%;
-    margin: 0;
-  }
+  html, body { height: 100%; margin: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: #2e6c1d;
@@ -18,108 +15,135 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 24px;
+    padding: 20px;
     text-align: center;
   }
-  #status {
-    font-size: 16px;
-    margin-bottom: 28px;
-    min-height: 44px;
-    line-height: 1.4;
+  #icon {
+    font-size: 46px;
+    margin-bottom: 12px;
   }
-  #micBtn {
-    width: 110px;
-    height: 110px;
-    border-radius: 50%;
-    border: 4px solid rgba(255,255,255,0.5);
-    background: #d32f2f;
-    color: #fff;
-    font-size: 42px;
-    cursor: pointer;
-  }
-  #micBtn.recording {
+  #icon.recording {
     animation: pulse 1.2s infinite;
-    background: #b71c1c;
   }
   @keyframes pulse {
-    0%   { box-shadow: 0 0 0 0 rgba(255,255,255,0.5); }
-    70%  { box-shadow: 0 0 0 22px rgba(255,255,255,0); }
-    100% { box-shadow: 0 0 0 0 rgba(255,255,255,0); }
+    0%   { transform: scale(1); }
+    50%  { transform: scale(1.15); }
+    100% { transform: scale(1); }
+  }
+  #status {
+    font-size: 14px;
+    line-height: 1.5;
+    opacity: 0.9;
   }
   #err {
     color: #ffcdd2;
-    margin-top: 18px;
-    font-size: 13px;
-    max-width: 280px;
+    margin-top: 14px;
+    font-size: 12px;
+    max-width: 240px;
   }
 </style>
 </head>
 <body>
-  <div id="status">לחץ/י על המיקרופון כדי להתחיל<br><span style="opacity:.8;font-size:13px">Tap the mic to start recording</span></div>
-  <button id="micBtn">🎙️</button>
+  <div id="icon">🎙️</div>
+  <div id="status">מוכן להקלטה<br><span style="opacity:.8;font-size:12px">Ready — controlled from the main app</span></div>
   <div id="err"></div>
 
 <script>
+  let stream = null;
   let mediaRecorder = null;
   let chunks = [];
-  let recording = false;
+  let pendingStop = false;
+  let starting = false;
 
-  const micBtn = document.getElementById('micBtn');
-  const status = document.getElementById('status');
-  const err = document.getElementById('err');
+  const iconEl = document.getElementById('icon');
+  const statusEl = document.getElementById('status');
+  const errEl = document.getElementById('err');
 
-  micBtn.addEventListener('click', async function() {
-    err.innerText = '';
+  function setStatus(recording, text) {
+    iconEl.classList.toggle('recording', recording);
+    iconEl.innerText = recording ? '🛑' : '🎙️';
+    statusEl.innerHTML = text;
+  }
 
-    if (!recording) {
-      // --- Start recording ---
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        chunks = [];
-        mediaRecorder = new MediaRecorder(stream);
+  async function ensureStream() {
+    if (stream) return stream;
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return stream;
+  }
 
-        mediaRecorder.ondataavailable = function(e) {
-          if (e.data.size > 0) chunks.push(e.data);
+  async function handleStart() {
+    if (starting || (mediaRecorder && mediaRecorder.state === 'recording')) return;
+    starting = true;
+    pendingStop = false;
+    try {
+      const s = await ensureStream();
+      chunks = [];
+      mediaRecorder = new MediaRecorder(s);
+
+      mediaRecorder.ondataavailable = function(e) {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = function() {
+        const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+        const reader = new FileReader();
+        reader.onloadend = function() {
+          const base64Data = reader.result.split(',')[1];
+          if (window.opener) {
+            window.opener.postMessage({
+              type: 'DELTA_VOICE_CAPTURE',
+              base64Data: base64Data,
+              mimeType: blob.type
+            }, '*');
+          }
+          setStatus(false, 'מוכן להקלטה<br><span style="opacity:.8;font-size:12px">Ready — controlled from the main app</span>');
         };
+        reader.readAsDataURL(blob);
+      };
 
-        mediaRecorder.onstop = function() {
-          stream.getTracks().forEach(t => t.stop());
-          const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-          const reader = new FileReader();
-          reader.onloadend = function() {
-            const base64Data = reader.result.split(',')[1];
-            if (window.opener) {
-              window.opener.postMessage({
-                type: 'DELTA_VOICE_CAPTURE',
-                base64Data: base64Data,
-                mimeType: blob.type
-              }, '*');
-            }
-            window.close();
-          };
-          reader.readAsDataURL(blob);
-        };
+      mediaRecorder.start();
+      starting = false;
+      setStatus(true, 'מקליט...<br><span style="opacity:.8;font-size:12px">Recording...</span>');
 
-        mediaRecorder.start();
-        recording = true;
-        micBtn.classList.add('recording');
-        micBtn.innerText = '🛑';
-        status.innerHTML = 'מקליט... לחץ/י שוב לסיום<br><span style="opacity:.8;font-size:13px">Recording... tap again to stop</span>';
-      } catch (e) {
-        if (e.name === 'NotAllowedError') {
-          err.innerText = 'הגישה למיקרופון נחסמה. אנא אשר/י גישה בהגדרות הדפדפן עבור אתר זה.\nMicrophone access denied. Please allow it in your browser settings for this site.';
-        } else {
-          err.innerText = 'שגיאה: ' + e.message;
-        }
+      // If STOP arrived while we were still requesting the mic, apply it now.
+      if (pendingStop) {
+        mediaRecorder.stop();
       }
-    } else {
-      // --- Stop recording ---
-      recording = false;
-      micBtn.classList.remove('recording');
-      status.innerText = 'מעבד... / Processing...';
-      mediaRecorder.stop();
+    } catch (e) {
+      starting = false;
+      const msg = (e.name === 'NotAllowedError')
+        ? 'הגישה למיקרופון נחסמה בדפדפן.'
+        : e.message;
+      errEl.innerText = msg;
+      if (window.opener) {
+        window.opener.postMessage({ type: 'DELTA_VOICE_ERROR', message: msg }, '*');
+      }
     }
+  }
+
+  function handleStop() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    } else {
+      // Start hasn't finished yet (still requesting mic) — stop as soon as it does.
+      pendingStop = true;
+    }
+  }
+
+  window.addEventListener('message', function(event) {
+    if (!event.data || !event.data.type) return;
+    if (event.data.type === 'START_RECORDING') handleStart();
+    if (event.data.type === 'STOP_RECORDING') handleStop();
   });
+
+  window.addEventListener('beforeunload', function() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+  });
+
+  // Tell the main app this helper window is up and ready for commands.
+  if (window.opener) {
+    window.opener.postMessage({ type: 'DELTA_BRIDGE_READY' }, '*');
+  }
 </script>
 </body>
 </html>
