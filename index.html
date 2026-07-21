@@ -18,21 +18,34 @@
     padding: 4px;
     text-align: center;
   }
-  #icon { font-size: 34px; line-height: 1; }
+  #icon { font-size: 30px; line-height: 1; }
   #icon.recording { animation: pulse 1.1s infinite; }
   @keyframes pulse {
     0%   { transform: scale(1); }
     50%  { transform: scale(1.2); }
     100% { transform: scale(1); }
   }
-  #status { font-size: 9px; margin-top: 4px; opacity: 0.85; line-height: 1.2; }
-  #err { color: #ffcdd2; margin-top: 4px; font-size: 8px; max-width: 84px; }
+  #status { font-size: 9px; margin-top: 3px; opacity: 0.85; line-height: 1.2; }
+  #err { color: #ffcdd2; margin-top: 3px; font-size: 8px; max-width: 100px; }
+  #backBtn {
+    display: none;
+    margin-top: 6px;
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.5);
+    color: #fff;
+    font-size: 9px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #backBtn:active { background: rgba(255,255,255,0.3); }
 </style>
 </head>
 <body>
-  <div id="icon">🎙️</div>
-  <div id="status">מוכן</div>
+  <div id="icon">🔐</div>
+  <div id="status">מבקש הרשאת מיקרופון... / Requesting mic permission...</div>
   <div id="err"></div>
+  <button id="backBtn" onclick="backToTranslator()">⬅ חזרה למתרגם / Back to Translator</button>
 
 <script>
   let stream = null;
@@ -40,15 +53,27 @@
   let chunks = [];
   let pendingStop = false;
   let starting = false;
+  let approved = false;
 
   const iconEl = document.getElementById('icon');
   const statusEl = document.getElementById('status');
   const errEl = document.getElementById('err');
+  const backBtn = document.getElementById('backBtn');
 
   function setStatus(recording, text) {
     iconEl.classList.toggle('recording', recording);
-    iconEl.innerText = recording ? '🛑' : '🎙️';
+    iconEl.innerText = recording ? '🛑' : (approved ? '🎙️' : '🔐');
     statusEl.innerText = text;
+  }
+
+  // Bring focus back to the main translator tab/window. The helper window
+  // stays open in the background rather than closing, so later recordings
+  // in this session don't have to open a new window each time.
+  function backToTranslator() {
+    if (window.opener) {
+      try { window.opener.focus(); } catch (e) {}
+    }
+    try { window.blur(); } catch (e) {}
   }
 
   async function ensureStream() {
@@ -57,8 +82,30 @@
     return stream;
   }
 
+  // The approval step: request the mic the moment this window opens, so the
+  // browser's one-time permission prompt happens right here, not mid-recording.
+  async function requestApproval() {
+    try {
+      await ensureStream();
+      approved = true;
+      setStatus(false, 'אושר! ✓ / Approved!');
+      backBtn.style.display = 'inline-block';
+      if (window.opener) {
+        window.opener.postMessage({ type: 'DELTA_MIC_APPROVED' }, '*');
+      }
+    } catch (e) {
+      const msg = (e.name === 'NotAllowedError') ? 'הגישה למיקרופון נחסמה' : e.message;
+      errEl.innerText = msg;
+      setStatus(false, 'האישור נכשל / Approval failed');
+      backBtn.style.display = 'inline-block';
+      if (window.opener) {
+        window.opener.postMessage({ type: 'DELTA_VOICE_ERROR', message: msg }, '*');
+      }
+    }
+  }
+
   async function handleStart() {
-    if (starting || (mediaRecorder && mediaRecorder.state === 'recording')) return;
+    if (!approved || starting || (mediaRecorder && mediaRecorder.state === 'recording')) return;
     starting = true;
     pendingStop = false;
     try {
@@ -82,14 +129,14 @@
               mimeType: blob.type
             }, '*');
           }
-          setStatus(false, 'מוכן');
+          setStatus(false, 'אושר! ✓ / Approved!');
         };
         reader.readAsDataURL(blob);
       };
 
       mediaRecorder.start();
       starting = false;
-      setStatus(true, 'מקליט');
+      setStatus(true, 'מקליט... / Recording...');
 
       if (pendingStop) {
         mediaRecorder.stop();
@@ -125,6 +172,8 @@
   if (window.opener) {
     window.opener.postMessage({ type: 'DELTA_BRIDGE_READY' }, '*');
   }
+
+  requestApproval();
 </script>
 </body>
 </html>
