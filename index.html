@@ -48,12 +48,20 @@
   <button id="backBtn" onclick="backToTranslator()">⬅ חזרה למתרגם / Back to Translator</button>
 
 <script>
+  // Holding a live getUserMedia stream open continuously locks the phone's
+  // microphone hardware for the whole session, which can silently block
+  // other apps from recording. So this page now only holds the stream for
+  // the moments it's actually needed - a quick probe during approval, and
+  // for the duration of each recording - releasing it immediately after.
+  const IDLE_CLOSE_MS = 3 * 60 * 1000; // self-terminate after 3 min of no activity
+
   let stream = null;
   let mediaRecorder = null;
   let chunks = [];
   let pendingStop = false;
   let starting = false;
   let approved = false;
+  let idleTimer = null;
 
   const iconEl = document.getElementById('icon');
   const statusEl = document.getElementById('status');
@@ -66,9 +74,30 @@
     statusEl.innerText = text;
   }
 
+  function releaseStream() {
+    if (stream) {
+      stream.getTracks().forEach(function(t) { t.stop(); });
+      stream = null;
+    }
+  }
+
+  function selfTerminate() {
+    releaseStream();
+    if (window.opener) {
+      try { window.opener.postMessage({ type: 'DELTA_BRIDGE_CLOSING' }, '*'); } catch (e) {}
+    }
+    window.close();
+  }
+
+  function resetIdleTimer() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(selfTerminate, IDLE_CLOSE_MS);
+  }
+
   // Bring focus back to the main translator tab/window. The helper window
   // stays open in the background rather than closing, so later recordings
-  // in this session don't have to open a new window each time.
+  // in this session don't have to open a new window each time - it will
+  // still self-close on its own after a few minutes of no use.
   function backToTranslator() {
     if (window.opener) {
       try { window.opener.focus(); } catch (e) {}
@@ -76,20 +105,17 @@
     try { window.blur(); } catch (e) {}
   }
 
-  async function ensureStream() {
-    if (stream) return stream;
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    return stream;
-  }
-
-  // The approval step: request the mic the moment this window opens, so the
-  // browser's one-time permission prompt happens right here, not mid-recording.
+  // The approval step: briefly request the mic just to trigger/confirm the
+  // browser's one-time permission prompt, then immediately let go of it
+  // again - approval doesn't require holding the hardware open.
   async function requestApproval() {
     try {
-      await ensureStream();
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach(function(t) { t.stop(); });
       approved = true;
       setStatus(false, 'אושר! ✓ / Approved!');
       backBtn.style.display = 'inline-block';
+      resetIdleTimer();
       if (window.opener) {
         window.opener.postMessage({ type: 'DELTA_MIC_APPROVED' }, '*');
       }
@@ -98,6 +124,7 @@
       errEl.innerText = msg;
       setStatus(false, 'האישור נכשל / Approval failed');
       backBtn.style.display = 'inline-block';
+      resetIdleTimer();
       if (window.opener) {
         window.opener.postMessage({ type: 'DELTA_VOICE_ERROR', message: msg }, '*');
       }
@@ -108,16 +135,19 @@
     if (!approved || starting || (mediaRecorder && mediaRecorder.state === 'recording')) return;
     starting = true;
     pendingStop = false;
+    clearTimeout(idleTimer); // don't self-close mid-recording
+
     try {
-      const s = await ensureStream();
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       chunks = [];
-      mediaRecorder = new MediaRecorder(s);
+      mediaRecorder = new MediaRecorder(stream);
 
       mediaRecorder.ondataavailable = function(e) {
         if (e.data.size > 0) chunks.push(e.data);
       };
 
       mediaRecorder.onstop = function() {
+        releaseStream(); // give the mic back the instant recording ends
         const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
         const reader = new FileReader();
         reader.onloadend = function() {
@@ -130,6 +160,7 @@
             }, '*');
           }
           setStatus(false, 'אושר! ✓ / Approved!');
+          resetIdleTimer();
         };
         reader.readAsDataURL(blob);
       };
@@ -143,6 +174,8 @@
       }
     } catch (e) {
       starting = false;
+      releaseStream();
+      resetIdleTimer();
       const msg = (e.name === 'NotAllowedError') ? 'הגישה נחסמה' : e.message;
       errEl.innerText = msg;
       if (window.opener) {
@@ -166,7 +199,7 @@
   });
 
   window.addEventListener('beforeunload', function() {
-    if (stream) stream.getTracks().forEach(t => t.stop());
+    releaseStream();
   });
 
   if (window.opener) {
